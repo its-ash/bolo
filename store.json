@@ -1,0 +1,11 @@
+{
+  "id": "bolo",
+  "name": "Bolo",
+  "repo": "its-ash/bolo",
+  "package": "com.itsash.bolo",
+  "tagline": "Speak and it becomes searchable text. Voice notes in English and Hindi, on your phone.",
+  "description": "Bolo turns your voice into notes you can search. Tap the big button and talk: your words appear as text while you speak, using the speech recognizer on your phone, offline when a speech pack is installed. It keeps listening through pauses, so you can dictate a long note. Pick English (India), Hindi or your device language. Where the phone allows it, Bolo also keeps the audio so you can play it back. Search across every transcript, edit mistakes, pin important notes, and share the text or the audio. No account, nothing uploaded.",
+  "category": "Productivity",
+  "icon": "assets/icon/logo-1024.png",
+  "homepage": "https://bolo.itsash.in/"
+}
