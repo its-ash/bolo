@@ -26,6 +26,7 @@ class Player(private val emit: (Map<String, Any?>) -> Unit) {
         val current = mp
         if (current != null && path == file) {
             current.start()
+            handler.removeCallbacks(tick)
             handler.post(tick)
             send(true)
             return true
@@ -33,6 +34,8 @@ class Player(private val emit: (Map<String, Any?>) -> Unit) {
         stop()
         return try {
             val p = MediaPlayer()
+            mp = p
+            path = file
             p.setDataSource(file)
             p.setOnCompletionListener {
                 handler.removeCallbacks(tick)
@@ -40,9 +43,8 @@ class Player(private val emit: (Map<String, Any?>) -> Unit) {
                 release()
             }
             p.prepare()
-            mp = p
-            path = file
             p.start()
+            handler.removeCallbacks(tick)
             handler.post(tick)
             send(true)
             true

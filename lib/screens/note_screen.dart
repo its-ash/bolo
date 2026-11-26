@@ -58,7 +58,7 @@ class _NoteScreenState extends State<NoteScreen> {
       Future.microtask(() => notes.updateText(id, text));
     }
     _sub?.cancel();
-    if (_playing) s.platform.stopPlay();
+    if (_playing || _pos > 0) s.platform.stopPlay();
     _text.dispose();
     super.dispose();
   }

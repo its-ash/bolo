@@ -189,6 +189,7 @@ class _RecordButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final fill = active ? colors.danger : colors.accent;
+    final fg = active ? colors.onDanger : colors.onAccent;
     final double halo = 96 + 40 * (active ? level : 0.0);
     return SizedBox(
       width: 140,
@@ -216,8 +217,8 @@ class _RecordButton extends StatelessWidget {
                   width: 96,
                   height: 96,
                   child: busy
-                      ? const Center(child: UiSpinner(size: 28))
-                      : Icon(active ? Icons.stop_rounded : Icons.mic_rounded, size: 44, color: Colors.white),
+                      ? Center(child: UiSpinner(size: 28, color: fg))
+                      : Icon(active ? Icons.stop_rounded : Icons.mic_rounded, size: 44, color: fg),
                 ),
               ),
             ),

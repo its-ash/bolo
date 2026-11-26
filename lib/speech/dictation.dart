@@ -30,6 +30,7 @@ class DictationController extends ChangeNotifier {
   String? _errorCode;
   bool _offlineMissing = false;
   String? _notice;
+  bool _disposed = false;
 
   DictationPhase get phase => _phase;
   bool get isActive => _phase == DictationPhase.active || _phase == DictationPhase.starting;
@@ -60,8 +61,12 @@ class DictationController extends ChangeNotifier {
   /// A non-fatal message, e.g. the audio copy was dropped.
   String? get notice => _notice;
 
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
   Future<StartOutcome> start({required String lang, required bool keepAudio}) async {
-    if (_phase != DictationPhase.idle) return StartOutcome.failed;
+    if (_disposed || _phase != DictationPhase.idle) return StartOutcome.failed;
     _phase = DictationPhase.starting;
     _transcript = TranscriptBuilder();
     _halted = false;
@@ -71,18 +76,23 @@ class DictationController extends ChangeNotifier {
     _notice = null;
     _keepingAudio = false;
     _lang = lang;
-    notifyListeners();
+    _notify();
 
     final status = await platform.status();
+    if (_disposed) return StartOutcome.failed;
     if (!status.available) {
       _fail('no_recognizer');
       return StartOutcome.noRecognizer;
     }
-    if (!status.mic && !await platform.requestMic()) {
-      _phase = DictationPhase.idle;
-      _errorCode = 'mic_denied';
-      notifyListeners();
-      return StartOutcome.micDenied;
+    if (!status.mic) {
+      final granted = await platform.requestMic();
+      if (_disposed) return StartOutcome.failed;
+      if (!granted) {
+        _phase = DictationPhase.idle;
+        _errorCode = 'mic_denied';
+        _notify();
+        return StartOutcome.micDenied;
+      }
     }
 
     _startedAt = DateTime.now();
@@ -93,21 +103,31 @@ class DictationController extends ChangeNotifier {
     } catch (_) {
       await _sub?.cancel();
       _sub = null;
+      if (_disposed) return StartOutcome.failed;
       _fail('start_failed');
       return StartOutcome.failed;
     }
+    if (_disposed) {
+      await _sub?.cancel();
+      _sub = null;
+      try {
+        await platform.stop();
+      } catch (_) {}
+      return StartOutcome.failed;
+    }
     _phase = DictationPhase.active;
-    notifyListeners();
+    _notify();
     return StartOutcome.started;
   }
 
   void _fail(String code) {
     _phase = DictationPhase.idle;
     _errorCode = code;
-    notifyListeners();
+    _notify();
   }
 
   void _onEvent(SpeechEvent e) {
+    if (_disposed) return;
     switch (e.type) {
       case 'partial':
         _transcript.onPartial(e.text);
@@ -125,14 +145,14 @@ class DictationController extends ChangeNotifier {
       default:
         return;
     }
-    notifyListeners();
+    _notify();
   }
 
   /// Stops listening and returns the note to save, or null when nothing was captured.
   Future<Note?> stop() async {
     if (_phase != DictationPhase.active) return null;
     _phase = DictationPhase.stopping;
-    notifyListeners();
+    _notify();
     StopResult result;
     try {
       result = await platform.stop();
@@ -147,7 +167,7 @@ class DictationController extends ChangeNotifier {
     final text = _transcript.text;
     _phase = DictationPhase.idle;
     _level = 0;
-    notifyListeners();
+    _notify();
     final audio = result.audioPath;
     if (text.isEmpty && audio == null) return null;
     return Note(
@@ -163,7 +183,9 @@ class DictationController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _sub?.cancel();
+    _sub = null;
     super.dispose();
   }
 }

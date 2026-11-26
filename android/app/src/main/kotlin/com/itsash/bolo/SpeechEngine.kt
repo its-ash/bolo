@@ -34,6 +34,11 @@ class SpeechEngine(private val context: Context, private val emit: (Map<String, 
     private var recognizer: SpeechRecognizer? = null
     private var tee: AudioTee? = null
     private var teeFile: File? = null
+    private var pendingReadEnd: ParcelFileDescriptor? = null
+    private var restartTask: Runnable? = null
+    private var stopTimeout: Runnable? = null
+    private var stoppedAudioPath: String? = null
+    private var stoppedDurationMs = 0L
 
     private var active = false
     private var sessionOpen = false
@@ -60,6 +65,8 @@ class SpeechEngine(private val context: Context, private val emit: (Map<String, 
         stopDone = null
         tee = null
         teeFile = null
+        stoppedAudioPath = null
+        stoppedDurationMs = 0L
         if (keepAudio && Build.VERSION.SDK_INT >= 33) {
             val t = AudioTee(audioFile)
             if (t.start()) {
@@ -71,7 +78,12 @@ class SpeechEngine(private val context: Context, private val emit: (Map<String, 
         } else if (keepAudio) {
             emit(mapOf("type" to "notice", "code" to "audio_needs_13"))
         }
-        beginSession()
+        try {
+            beginSession()
+        } catch (e: Exception) {
+            release()
+            throw e
+        }
         return tee != null
     }
 
@@ -119,10 +131,31 @@ class SpeechEngine(private val context: Context, private val emit: (Map<String, 
             emit(mapOf("type" to "state", "listening" to true))
         } catch (e: Exception) {
             sessionOpen = false
+            runCatching { readEnd?.close() }
+            readEnd = null
             fail("start_failed", false)
         }
         // The recognizer got its own copy of the descriptor with the call above.
-        readEnd?.let { fd -> handler.postDelayed({ runCatching { fd.close() } }, 1500) }
+        readEnd?.let { fd ->
+            closePendingReadEnd()
+            pendingReadEnd = fd
+            handler.postDelayed({
+                runCatching { fd.close() }
+                if (pendingReadEnd === fd) pendingReadEnd = null
+            }, 1500)
+        }
+    }
+
+    private fun cancelTimers() {
+        restartTask?.let { handler.removeCallbacks(it) }
+        restartTask = null
+        stopTimeout?.let { handler.removeCallbacks(it) }
+        stopTimeout = null
+    }
+
+    private fun closePendingReadEnd() {
+        pendingReadEnd?.let { runCatching { it.close() } }
+        pendingReadEnd = null
     }
 
     private fun scheduleRestart(delay: Long = 250) {
@@ -132,7 +165,13 @@ class SpeechEngine(private val context: Context, private val emit: (Map<String, 
             return
         }
         if (!active) return
-        handler.postDelayed({ beginSession() }, delay)
+        restartTask?.let { handler.removeCallbacks(it) }
+        val task = Runnable {
+            restartTask = null
+            beginSession()
+        }
+        restartTask = task
+        handler.postDelayed(task, delay)
     }
 
     private val listener = object : RecognitionListener {
@@ -168,6 +207,10 @@ class SpeechEngine(private val context: Context, private val emit: (Map<String, 
 
         override fun onError(error: Int) {
             sessionOpen = false
+            if (stopDone != null) {
+                finish()
+                return
+            }
             when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> scheduleRestart()
                 SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
@@ -200,6 +243,7 @@ class SpeechEngine(private val context: Context, private val emit: (Map<String, 
     private fun dropAudioIfFresh(): Boolean {
         val t = tee ?: return false
         if (gotAnyResult) return false
+        closePendingReadEnd()
         t.discard()
         tee = null
         teeFile = null
@@ -217,23 +261,42 @@ class SpeechEngine(private val context: Context, private val emit: (Map<String, 
         emit(mapOf("type" to "error", "code" to code, "offlineMissing" to offlineMissing))
         // Keep the audio and whatever text Dart already has: just stop listening.
         active = false
-        handler.removeCallbacksAndMessages(null)
+        sessionOpen = false
+        cancelTimers()
+        closePendingReadEnd()
+        runCatching { recognizer?.destroy() }
+        recognizer = null
+        tee?.let {
+            stoppedDurationMs = it.stop()
+            stoppedAudioPath = teeFile?.absolutePath
+        }
+        tee = null
+        teeFile = null
         emit(mapOf("type" to "state", "listening" to false))
     }
 
     /** Ends dictation. [done] gets {audioPath, durationMs} once the last text has been delivered. */
     fun stop(done: (Map<String, Any?>) -> Unit) {
-        if (!active && recognizer == null && tee == null) {
+        if (stopDone != null) {
+            done(mapOf("audioPath" to null, "durationMs" to 0))
+            return
+        }
+        if (!active && recognizer == null && tee == null && stoppedAudioPath == null) {
             done(mapOf("audioPath" to null, "durationMs" to 0))
             return
         }
         active = false
-        handler.removeCallbacksAndMessages(null)
+        cancelTimers()
         stopDone = done
         if (sessionOpen) {
             runCatching { recognizer?.stopListening() }
             // The recognizer should answer with a result soon; do not wait forever.
-            handler.postDelayed({ finish() }, 1500)
+            val timeout = Runnable {
+                stopTimeout = null
+                finish()
+            }
+            stopTimeout = timeout
+            handler.postDelayed(timeout, 1500)
         } else {
             finish()
         }
@@ -242,12 +305,15 @@ class SpeechEngine(private val context: Context, private val emit: (Map<String, 
     private fun finish() {
         val done = stopDone ?: return
         stopDone = null
-        handler.removeCallbacksAndMessages(null)
+        cancelTimers()
+        closePendingReadEnd()
         sessionOpen = false
         runCatching { recognizer?.destroy() }
         recognizer = null
-        var path: String? = null
-        var duration = 0L
+        var path = stoppedAudioPath
+        var duration = stoppedDurationMs
+        stoppedAudioPath = null
+        stoppedDurationMs = 0L
         tee?.let {
             duration = it.stop()
             path = teeFile?.absolutePath
@@ -261,11 +327,16 @@ class SpeechEngine(private val context: Context, private val emit: (Map<String, 
 
     fun release() {
         active = false
-        handler.removeCallbacksAndMessages(null)
+        sessionOpen = false
+        cancelTimers()
+        closePendingReadEnd()
         runCatching { recognizer?.destroy() }
         recognizer = null
         tee?.discard()
         tee = null
+        teeFile = null
+        stoppedAudioPath = null
+        stoppedDurationMs = 0L
         stopDone = null
     }
 

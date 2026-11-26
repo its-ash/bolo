@@ -87,7 +87,7 @@ class NoteStore extends ChangeNotifier {
 
   Future<void> _save() {
     final json = jsonEncode([for (final n in _notes) n.toJson()]);
-    _writing = _writing.then((_) async {
+    _writing = _writing.catchError((_) {}).then((_) async {
       final tmp = File('${_file.path}.tmp');
       await tmp.writeAsString(json, flush: true);
       await tmp.rename(_file.path);
